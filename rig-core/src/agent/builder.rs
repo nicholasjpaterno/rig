@@ -226,6 +226,77 @@ where
         }
     }
 
+    /// Add a TurboMCP tool to the agent
+    #[cfg(feature = "turbomcp")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turbomcp")))]
+    pub fn turbomcp_tool<T: turbomcp_client::Transport + 'static>(
+        self,
+        tool: turbomcp_client::Tool,
+        client: turbomcp_client::Client<T>,
+    ) -> AgentBuilderSimple<M> {
+        use crate::tool::turbomcp::TurboMcpTool;
+
+        let toolname = tool.name.clone().to_string();
+        let tools = ToolSet::from_tools(vec![TurboMcpTool::from_mcp_server(tool, client)]);
+        let static_tools = vec![toolname];
+
+        AgentBuilderSimple {
+            name: self.name,
+            description: self.description,
+            model: self.model,
+            preamble: self.preamble,
+            static_context: self.static_context,
+            static_tools,
+            additional_params: self.additional_params,
+            max_tokens: self.max_tokens,
+            dynamic_context: vec![],
+            dynamic_tools: vec![],
+            temperature: self.temperature,
+            tools,
+            tool_choice: self.tool_choice,
+        }
+    }
+
+    /// Add an array of TurboMCP tools to the agent
+    #[cfg(feature = "turbomcp")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "turbomcp")))]
+    pub fn turbomcp_tools<T: turbomcp_client::Transport + 'static>(
+        self,
+        tools: Vec<turbomcp_client::Tool>,
+        client: turbomcp_client::Client<T>,
+    ) -> AgentBuilderSimple<M> {
+        use crate::tool::turbomcp::TurboMcpTool;
+
+        let (static_tools, tools) = tools.into_iter().fold(
+            (Vec::new(), Vec::new()),
+            |(mut toolnames, mut toolset), tool| {
+                let tool_name = tool.name.to_string();
+                let tool = TurboMcpTool::from_mcp_server(tool, client.clone());
+                toolnames.push(tool_name);
+                toolset.push(tool);
+                (toolnames, toolset)
+            },
+        );
+
+        let tools = ToolSet::from_tools(tools);
+
+        AgentBuilderSimple {
+            name: self.name,
+            description: self.description,
+            model: self.model,
+            preamble: self.preamble,
+            static_context: self.static_context,
+            static_tools,
+            additional_params: self.additional_params,
+            max_tokens: self.max_tokens,
+            dynamic_context: vec![],
+            dynamic_tools: vec![],
+            temperature: self.temperature,
+            tools,
+            tool_choice: self.tool_choice,
+        }
+    }
+
     /// Add some dynamic context to the agent. On each prompt, `sample` documents from the
     /// dynamic context will be inserted in the request.
     pub fn dynamic_context(

@@ -333,6 +333,138 @@ pub mod rmcp {
     }
 }
 
+#[cfg(feature = "turbomcp")]
+#[cfg_attr(docsrs, doc(cfg(feature = "turbomcp")))]
+pub mod turbomcp {
+    use crate::completion::ToolDefinition;
+    use crate::tool::ToolDyn;
+    use crate::tool::ToolError;
+    use crate::wasm_compat::WasmBoxedFuture;
+
+    // Use re-exported types from turbomcp and turbomcp-client
+    use turbomcp_client::Transport;
+    use turbomcp_client::Tool;
+
+    pub struct TurboMcpTool<T: Transport + 'static> {
+        definition: Tool,
+        client: turbomcp_client::Client<T>,
+    }
+
+    impl<T: Transport + 'static> TurboMcpTool<T> {
+        pub fn from_mcp_server(
+            definition: Tool,
+            client: turbomcp_client::Client<T>,
+        ) -> Self {
+            Self { definition, client }
+        }
+    }
+
+    impl From<&Tool> for ToolDefinition {
+        fn from(val: &Tool) -> Self {
+            Self {
+                name: val.name.to_string(),
+                description: val
+                    .description
+                    .clone()
+                    .map(|d| d.to_string())
+                    .unwrap_or_default(),
+                parameters: serde_json::to_value(&val.input_schema).unwrap_or_default(),
+            }
+        }
+    }
+
+    impl From<Tool> for ToolDefinition {
+        fn from(val: Tool) -> Self {
+            Self {
+                name: val.name.to_string(),
+                description: val.description.map(|d| d.to_string()).unwrap_or_default(),
+                parameters: serde_json::to_value(&val.input_schema).unwrap_or_default(),
+            }
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("TurboMCP tool error: {0}")]
+    pub struct TurboMcpToolError(String);
+
+    impl From<TurboMcpToolError> for ToolError {
+        fn from(e: TurboMcpToolError) -> Self {
+            ToolError::ToolCallError(Box::new(e))
+        }
+    }
+
+    impl<T: Transport + 'static> ToolDyn for TurboMcpTool<T> {
+        fn name(&self) -> String {
+            self.definition.name.to_string()
+        }
+
+        fn definition(&self, _prompt: String) -> WasmBoxedFuture<'_, ToolDefinition> {
+            Box::pin(async move {
+                ToolDefinition {
+                    name: self.definition.name.to_string(),
+                    description: self
+                        .definition
+                        .description
+                        .clone()
+                        .map(|d| d.to_string())
+                        .unwrap_or_default(),
+                    parameters: serde_json::to_value(&self.definition.input_schema)
+                        .unwrap_or_default(),
+                }
+            })
+        }
+
+        fn call(&self, args: String) -> WasmBoxedFuture<'_, Result<String, ToolError>> {
+            let name = self.definition.name.clone();
+            let arguments = serde_json::from_str(&args).unwrap_or_default();
+
+            Box::pin(async move {
+                let result_value = self
+                    .client
+                    .call_tool(&name, Some(arguments))
+                    .await
+                    .map_err(|e| TurboMcpToolError(format!("Tool returned an error: {e}")))?;
+
+                // Check if the tool execution resulted in an error
+                // The client returns a simplified JSON structure with is_error flag
+                if let Some(true) = result_value.get("is_error").and_then(|v| v.as_bool()) {
+                    let error_msg = result_value
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("No error message returned");
+                    return Err(TurboMcpToolError(error_msg.to_string()).into());
+                }
+
+                // Extract content based on the type returned by extract_tool_content
+                // The client simplifies the response to only the first content block
+                if let Some(text) = result_value.get("text").and_then(|v| v.as_str()) {
+                    Ok(text.to_string())
+                } else if let Some(image_data) = result_value.get("image").and_then(|v| v.as_str())
+                {
+                    let mime_type = result_value
+                        .get("mime_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("application/octet-stream");
+                    Ok(format!("data:{};base64,{}", mime_type, image_data))
+                } else if let Some(audio_data) = result_value.get("audio").and_then(|v| v.as_str())
+                {
+                    let mime_type = result_value
+                        .get("mime_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("application/octet-stream");
+                    Ok(format!("data:{};base64,{}", mime_type, audio_data))
+                } else if let Some(resource) = result_value.get("resource") {
+                    // Handle embedded resource content
+                    Ok(serde_json::to_string(resource).unwrap_or_default())
+                } else {
+                    // Fallback: serialize the entire result
+                    Ok(result_value.to_string())
+                }
+            })
+        }
+    }
+}
+
 /// Wrapper trait to allow for dynamic dispatch of raggable tools
 pub trait ToolEmbeddingDyn: ToolDyn {
     fn context(&self) -> serde_json::Result<serde_json::Value>;
